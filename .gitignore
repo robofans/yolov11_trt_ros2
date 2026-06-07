@@ -1,0 +1,10 @@
+calib_data
+configs
+cpp/build
+weights
+datasets/coco/
+runs
+results
+output_image.jpg
+__pycache__/
+*.pyc
