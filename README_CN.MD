@@ -1,43 +1,19 @@
 # ros_yolov11_trt
 
-YOLOv11 目标检测模型的 TensorRT 加速部署工程。
+基于 TensorRT 的 YOLOv11 目标检测加速部署方案，支持 Python 导出与评测、C++ CUDA 推理以及 ROS2 Humble 感知节点。
 
 ## 项目特性
 
-- PyTorch → ONNX 导出
+- PyTorch → ONNX 模型导出
 - FP32 / FP16 / INT8 / 混合精度（头尾 FP16）TensorRT 引擎构建
-- 速度 + 精度对比评测
+- 速度与精度对比评测
 - INT8 逐层敏感度分析（可选）
 - C++ CUDA 加速推理 + ROS2 Humble 感知节点
-
-## 目录结构
-
-```
-ros_yolov11_trt/
-├── run_docker.sh              # Docker 启动脚本
-├── configs/                   # 层精度配置文件
-├── calib_data/                # INT8 校准数据（需生成）
-├── weights/                   # 模型权重和引擎
-├── py/
-│   ├── build_model_onnx.py          # PyTorch → ONNX 导出
-│   ├── build_trt_norm_engine.py     # FP32/FP16/INT8 引擎构建
-│   ├── build_trt_mixed_precision.py # 混合精度引擎（头/尾 FP16）
-│   ├── prepare_calib_data.py        # INT8 校准数据准备
-│   ├── compare_accuracy.py          # 速度 + 精度对比评测
-│   ├── sensitivity_analysis.py      # 逐层 INT8 敏感度分析
-│   └── yolo11_model.py             # YOLOv11 模型工具
-└── cpp/                      # C++ CUDA 推理 + ROS2 节点
-    ├── ros2/
-    │   ├── perception_node.cpp          # ROS2 感知节点
-    │   ├── visualization_node.cpp       # ROS2 可视化节点（可选）
-    │   ├── launch/                      # ROS2 launch 文件
-    │   └── scripts/
-    │       └── coco_image_publisher.py  # COCO 图像发布（2Hz 测试用）
-```
+- 测试环境：RTX 3050 笔记本 GPU
 
 ## 快速开始
 
-### 1. 下载权重和数据集
+### 1. 下载权重与数据集
 
 ```bash
 # 模型权重
@@ -69,12 +45,9 @@ python py/prepare_calib_data.py \
     --input_h 640
 ```
 
-#### 数据集配置
-
-`datasets/coco_local.yaml` 文件内容（项目中已提供）：
+数据集配置文件 `datasets/coco_local.yaml`（项目中已提供）：
 
 ```yaml
-# datasets/coco_local.yaml
 path: datasets/coco
 train: images/val2017
 val: images/val2017
@@ -102,18 +75,18 @@ python py/build_trt_norm_engine.py weights/yolo11n.onnx --fp16
 # INT8 引擎（需先准备校准数据）
 python py/build_trt_norm_engine.py weights/yolo11n.onnx --int8 --calib_dir calib_data
 
-# 同时保护头尾
+# 混合精度（同时保护头尾）
 python py/build_trt_mixed_precision.py weights/yolo11n.onnx \
     --protect-head 3 --protect-tail 32 --calib-dir calib_data
 ```
 
-### 5. 速度 + 精度评测
+### 5. 速度与精度评测
 
 ```bash
 python py/compare_accuracy.py --data datasets/coco_local.yaml
 ```
 
-在脚本中通过 `MODELS` 列表配置要评测的引擎（默认对比 FP32 / INT8 / Mixed）。
+在脚本中通过 `MODELS` 列表配置待评测的引擎（默认对比 FP32 / INT8 / Mixed）。
 
 输出示例：
 
@@ -138,26 +111,24 @@ python py/sensitivity_analysis.py \
     --output configs/layer_precision.json
 ```
 
-> 注意：该分析在 PyTorch 层面模拟单层量化，与 TensorRT 实际量化存在偏差。推荐直接用 `build_trt_mixed_precision.py --protect-tail N` 进行 TRT 原生的混合精度构建。
-
+> 注意：该分析在 PyTorch 层面模拟单层量化，与 TensorRT 实际量化存在偏差。推荐直接使用 `build_trt_mixed_precision.py --protect-tail N` 进行 TRT 原生的混合精度构建。
 
 ## 精度模式
 
-| 模式 | 精度 | FPS（约） | 适用场景 |
-|------|------|-----------|----------|
+| 模式 | 精度 | 参考 FPS | 适用场景 |
+|------|------|----------|----------|
 | FP32 | Float32 | ~260 | 最高精度基线 |
 | FP16 | Float16 | ~420 | 精度无损加速 |
 | INT8 | Int8 | ~470 | 边缘设备部署 |
-| Mixed | INT8 + 关键层 FP16 | ~440 | INT8 掉点 <1%，精度速度兼顾 |
+| Mixed | INT8 + 关键层 FP16 | ~440 | INT8 掉点 <1%，兼顾精度与速度 |
 
 ### INT8 混合精度策略
 
-检测任务的 INT8 量化掉点主要来自**检测头**（bbox 回归 + 分类）。策略：
+检测任务的 INT8 量化精度损失主要来自**检测头**（bbox 回归 + 分类）。策略如下：
 
 - **保护最后 N 层**：`build_trt_mixed_precision.py --protect-tail N`，将最后 N 个 Conv 层设为 FP16，其余 INT8
-- **同时保护头尾**：`--protect-head M --protect-tail N`，前 M 个 Conv（浅层特征）和后 N 个 Conv（检测头）用 FP16
-- N 的推荐范围：YOLO11n 约 32~64 个 Conv 层，可根据实测精度选择
-
+- **同时保护头尾**：`--protect-head M --protect-tail N`，前 M 个 Conv（浅层特征）和后 N 个 Conv（检测头）使用 FP16
+- N 的推荐范围：YOLO11n 约 32~64 个 Conv 层，可根据实测精度调整
 
 ## 单图推理（C++ 命令行）
 
@@ -167,10 +138,9 @@ python py/sensitivity_analysis.py \
 ./cpp/build/YOLOv11TRT /path/to/image.jpg /path/to/engine.engine
 ```
 
-
 ## ROS2 感知节点
 
-### 6.1 编译
+### 编译
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -181,13 +151,11 @@ cmake .. -DBUILD_STANDALONE=OFF -DBUILD_ROS2=ON \
 make -j$(nproc)
 ```
 
-> 编译前需在宿主机执行 `xhost +local:` 允许 Docker 容器连接 X11。
-
 编译产物：
 - `yolov11_ros2_node` — 感知节点（推理 + 画框 + FPS + 发布 `/detection_image`）
-- `yolov11_visualization_node` — 可视化节点（可选，独立订阅 detections 画框）
+- `yolov11_visualization_node` — 可视化节点（可选，独立订阅 detections 并画框）
 
-### 6.2 启动感知管线
+### 启动感知管线
 
 ```bash
 # 完整可视化（默认）：画框 + FPS + image_view 弹窗
@@ -206,12 +174,12 @@ python3 cpp/ros2/launch/perception_with_viz.launch.py \
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `engine_path` | `weights/yolo11n_int8.engine` | 引擎路径（也可通过环境变量 `ENGINE_PATH` 设置） |
-| `enable_visualization` | `True` | 开启画框 + FPS 叠加 + 弹窗；关掉后仅发布 `/detections` |
+| `enable_visualization` | `True` | 开启画框 + FPS 叠加 + 弹窗；关闭后仅发布 `/detections` |
 | `image_topic` | `/camera/image_raw` | 订阅的图像话题 |
 | `conf_threshold` | `0.3` | 置信度阈值 |
 | `nms_threshold` | `0.4` | NMS 阈值 |
 
-### 6.3 发布 COCO 测试图像
+### 发布 COCO 测试图像
 
 ```bash
 python3 cpp/ros2/scripts/coco_image_publisher.py \
@@ -228,7 +196,7 @@ python3 cpp/ros2/scripts/coco_image_publisher.py \
 | `--once` | false | 发布一遍后退出 |
 | `--max-images` | 0 (全部) | 限制图片数量 |
 
-### 6.4 话题拓扑
+### 话题拓扑
 
 ```
 /camera/image_raw ──→ perception_node ──→ /detection_image (bboxes + FPS, 仅 enable_visualization=True)
@@ -243,7 +211,6 @@ python3 cpp/ros2/scripts/coco_image_publisher.py \
 subscribe → cv_bridge → preprocess(GPU) → infer(TRT) → postprocess(NMS) → publish(/detections)
                           └────────── ~3ms for INT8 ──────────┘
 ```
-
 
 ## 依赖
 
